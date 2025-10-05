@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import sociocultureQuestions from './data/questions.socioculture.json';
 import worldGeographyQuestions from './data/questions.worldgeography.json';
 
@@ -9,6 +9,9 @@ const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-
 // --- Subjects & Local Storage Helpers ---
 const SUBJECTS = ['사회문화', '세계지리'];
 const SELECTED_SUBJECT_KEY = 'selectedSubject';
+const TEST_COUNT_KEY = 'testQuestionCount';
+const MASTERED_THRESHOLD_KEY = 'masteredCorrectThreshold';
+const CUSTOM_QUESTIONS_KEY = 'customQuestions';
 
 function loadSelectedSubject() {
   try {
@@ -21,6 +24,42 @@ function loadSelectedSubject() {
 
 function persistSelectedSubject(subject) {
   try { localStorage.setItem(SELECTED_SUBJECT_KEY, subject); } catch (_) {}
+}
+
+function loadTestCount() {
+  try {
+    const raw = localStorage.getItem(TEST_COUNT_KEY);
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : 10;
+  } catch (_) { return 10; }
+}
+
+function persistTestCount(n) {
+  try { localStorage.setItem(TEST_COUNT_KEY, String(n)); } catch (_) {}
+}
+
+function loadMasteredThreshold() {
+  try {
+    const raw = localStorage.getItem(MASTERED_THRESHOLD_KEY);
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= 0 ? n : 0; // 0이면 제외 안 함
+  } catch (_) { return 0; }
+}
+
+function persistMasteredThreshold(n) {
+  try { localStorage.setItem(MASTERED_THRESHOLD_KEY, String(n)); } catch (_) {}
+}
+
+function loadCustomQuestions() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_QUESTIONS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch (_) { return []; }
+}
+
+function persistCustomQuestions(qs) {
+  try { localStorage.setItem(CUSTOM_QUESTIONS_KEY, JSON.stringify(qs)); } catch (_) {}
 }
 
 // --- Local Storage for Question Stats ---
@@ -71,7 +110,7 @@ const LightBulbIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" className="
 
 // --- Main App Component ---
 export default function App() {
-  const [appState, setAppState] = useState('input'); // 'input', 'test', 'results'
+  const [appState, setAppState] = useState('input'); // 'input', 'test', 'results', 'browse'
   const [testQuestions, setTestQuestions] = useState([]);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [userAnswers, setUserAnswers] = useState([]);
@@ -82,6 +121,9 @@ export default function App() {
   const [error, setError] = useState(null);
 
   const [selectedSubject, setSelectedSubject] = useState(loadSelectedSubject());
+  const [testCount, setTestCount] = useState(loadTestCount());
+  const [masteredThreshold, setMasteredThreshold] = useState(loadMasteredThreshold());
+  const [addModalOpen, setAddModalOpen] = useState(false);
 
   // New state for Gemini features
   const [isAnalysisLoading, setIsAnalysisLoading] = useState(false);
@@ -90,20 +132,69 @@ export default function App() {
   const [isSimilarQuestionLoading, setIsSimilarQuestionLoading] = useState(null); // Will hold the id of the question being generated
   const [similarQuestionModalOpen, setSimilarQuestionModalOpen] = useState(false);
 
+  // Browse mode state
+  const [browseQuestions, setBrowseQuestions] = useState([]);
+  const [browseAnswers, setBrowseAnswers] = useState({}); // id -> selected option
+
+  // recompute browse list when subject or filter changes while in browse mode
+  useEffect(() => {
+    if (appState !== 'browse') return;
+    const merged = [...sociocultureQuestions, ...worldGeographyQuestions];
+    const custom = loadCustomQuestions();
+    const subjectFiltered = [...merged, ...custom].filter(q => q.subject === selectedSubject);
+    const withStats = mergeStatsIntoQuestions(subjectFiltered);
+    const filteredByMastery = masteredThreshold > 0
+      ? withStats.filter(q => (q.correctCount ?? 0) < masteredThreshold)
+      : withStats;
+    setBrowseQuestions(filteredByMastery);
+  }, [appState, selectedSubject, masteredThreshold]);
+
 
   const startTest = () => {
     const merged = [...sociocultureQuestions, ...worldGeographyQuestions];
-    const subjectFiltered = merged.filter(q => q.subject === selectedSubject);
+    const custom = loadCustomQuestions();
+    const subjectFiltered = [...merged, ...custom].filter(q => q.subject === selectedSubject);
     if (subjectFiltered.length === 0) {
       setError('선택한 과목의 문항이 없습니다.');
       return;
     }
     const withStats = mergeStatsIntoQuestions(subjectFiltered);
-    const shuffled = [...withStats].sort(() => 0.5 - Math.random());
-    setTestQuestions(shuffled);
-    setUserAnswers(Array(shuffled.length).fill(''));
+    const filteredByMastery = masteredThreshold > 0
+      ? withStats.filter(q => (q.correctCount ?? 0) < masteredThreshold)
+      : withStats;
+    if (filteredByMastery.length === 0) {
+      setError(`정답 ${masteredThreshold}회 이상 제외 설정으로 남은 문항이 없습니다. 기준을 낮추세요.`);
+      return;
+    }
+    // Shuffle options per question so choices appear in random order each run
+    const withShuffledOptions = filteredByMastery.map(q => ({
+      ...q,
+      options: Array.isArray(q.options) ? [...q.options].sort(() => 0.5 - Math.random()) : q.options
+    }));
+    const shuffled = [...withShuffledOptions].sort(() => 0.5 - Math.random());
+    const limited = shuffled.slice(0, Math.min(testCount, shuffled.length));
+    setTestQuestions(limited);
+    setUserAnswers(Array(limited.length).fill(''));
     setCurrentQuestionIndex(0);
     setAppState('test');
+    setError(null);
+  };
+
+  const startBrowse = () => {
+    const merged = [...sociocultureQuestions, ...worldGeographyQuestions];
+    const custom = loadCustomQuestions();
+    const subjectFiltered = [...merged, ...custom].filter(q => q.subject === selectedSubject);
+    if (subjectFiltered.length === 0) {
+      setError('선택한 과목의 문항이 없습니다.');
+      return;
+    }
+    const withStats = mergeStatsIntoQuestions(subjectFiltered);
+    const filteredByMastery = masteredThreshold > 0
+      ? withStats.filter(q => (q.correctCount ?? 0) < masteredThreshold)
+      : withStats;
+    setBrowseQuestions(filteredByMastery);
+    setBrowseAnswers({});
+    setAppState('browse');
     setError(null);
   };
 
@@ -155,6 +246,41 @@ export default function App() {
 
     setResults(calculatedResults);
     setAppState('results');
+  };
+
+  const handleBrowseSelect = (question, selectedOption) => {
+    setBrowseAnswers(prev => {
+      const alreadyAnswered = Object.prototype.hasOwnProperty.call(prev, question.id);
+      const next = { ...prev, [question.id]: selectedOption };
+
+      if (!alreadyAnswered) {
+        // Persist per-question attempts/correct stats for the first selection only
+        const currentStats = loadQuestionStats();
+        const key = getQuestionStatKey(question);
+        const prevStat = currentStats[key] || { attemptsCount: 0, correctCount: 0 };
+        const isCorrect = (question.answer || '').trim().toLowerCase() === (selectedOption || '').trim().toLowerCase();
+        const updated = {
+          ...currentStats,
+          [key]: {
+            attemptsCount: prevStat.attemptsCount + 1,
+            correctCount: prevStat.correctCount + (isCorrect ? 1 : 0),
+          },
+        };
+        persistQuestionStats(updated);
+        try {
+          const updates = [{ id: getQuestionStatKey(question), attemptsDelta: 1, correctDelta: isCorrect ? 1 : 0 }];
+          fetch('/api/stats', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ updates })
+          }).catch(() => {});
+        } catch (_) {
+          // ignore network errors
+        }
+      }
+
+      return next;
+    });
   };
 
   const fetchLLMExplanations = async () => {
@@ -265,32 +391,81 @@ export default function App() {
     setSimilarQuestion(null);
     setSimilarQuestionModalOpen(false);
     setIsSimilarQuestionLoading(null);
+    setBrowseQuestions([]);
+    setBrowseAnswers({});
   };
 
   const SubjectSwitcher = () => (
     <div className="w-full max-w-4xl mx-auto mb-4">
       <div className="bg-white p-4 rounded-xl shadow flex items-center justify-between">
-        <div className="flex items-center space-x-2">
-          <span className="text-sm text-gray-600">과목</span>
-          <select
-            value={selectedSubject}
-            onChange={(e) => {
-              const s = e.target.value;
-              setSelectedSubject(s);
-              persistSelectedSubject(s);
-              if (appState !== 'input') {
-                resetApp();
-              }
-            }}
-            className="text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-          >
-            {SUBJECTS.map(s => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
+        <div className="flex items-center space-x-3">
+          <a
+            href="/"
+            onClick={(e) => { e.preventDefault(); resetApp(); }}
+            className="px-3 py-1.5 text-sm bg-white text-indigo-700 rounded-lg border border-indigo-600 hover:bg-indigo-50"
+          >홈</a>
+          <div className="flex items-center space-x-2">
+            <span className="text-sm text-gray-600">과목</span>
+            <select
+              value={selectedSubject}
+              onChange={(e) => {
+                const s = e.target.value;
+                setSelectedSubject(s);
+                persistSelectedSubject(s);
+                if (appState !== 'input') {
+                  resetApp();
+                }
+              }}
+              className="text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            >
+              {SUBJECTS.map(s => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
         </div>
-        <div>
+        <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-2">
+            <span className="text-sm text-gray-600">문항수</span>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={testCount}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (!Number.isNaN(v)) {
+                  const clamped = Math.max(1, Math.min(50, Math.floor(v)));
+                  setTestCount(clamped);
+                  persistTestCount(clamped);
+                }
+              }}
+              className="w-20 text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 text-right"
+            />
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="text-sm text-gray-600">정답 n회 이상 제외</span>
+            <input
+              type="number"
+              min={0}
+              max={50}
+              value={masteredThreshold}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (!Number.isNaN(v)) {
+                  const clamped = Math.max(0, Math.min(50, Math.floor(v)));
+                  setMasteredThreshold(clamped);
+                  persistMasteredThreshold(clamped);
+                }
+              }}
+              className="w-24 text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 text-right"
+            />
+          </div>
           <span className="inline-block text-xs font-bold px-2 py-1 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-200">{selectedSubject}</span>
+          <button
+            onClick={() => setAddModalOpen(true)}
+            className="ml-2 px-3 py-1.5 text-sm bg-gray-800 text-white rounded-lg hover:bg-gray-900"
+          >문제 등록</button>
         </div>
       </div>
     </div>
@@ -361,7 +536,10 @@ export default function App() {
         </div>
         <p className="text-gray-600 mb-8">엄선된 수능 {selectedSubject} 핵심 문제로 실력을 점검하고, AI의 상세한 해설로 약점을 보완해보세요!</p>
         {error && <p className="text-red-500 text-center my-4">{error}</p>}
-        <button onClick={startTest} className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-transform transform hover:scale-105">퀴즈 시작하기</button>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <button onClick={startTest} className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-transform transform hover:scale-105">퀴즈 시작하기</button>
+          <button onClick={startBrowse} className="w-full bg-white text-indigo-700 font-bold py-3 px-4 rounded-lg border border-indigo-600 hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-transform transform hover:scale-105">일반 모드로 보기</button>
+        </div>
       </div>
     </div>
   );
@@ -499,6 +677,87 @@ export default function App() {
     );
   };
 
+  const renderBrowseScreen = () => {
+    const stats = loadQuestionStats();
+    return (
+      <div className="w-full max-w-5xl mx-auto">
+        <div className="bg-white p-6 rounded-xl shadow-lg">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-2xl font-bold text-gray-800">일반 모드: 문제 목록</h2>
+            <div className="flex items-center space-x-2">
+              <span className="inline-block text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">{selectedSubject}</span>
+              <span className="text-sm text-gray-500">총 {browseQuestions.length}문항</span>
+            </div>
+          </div>
+          {browseQuestions.length === 0 && (
+            <p className="text-gray-600">해당 과목의 문제가 없습니다.</p>
+          )}
+          <div className="space-y-4">
+            {browseQuestions.map((q, idx) => {
+              const selected = browseAnswers[q.id];
+              return (
+                <div key={q.id} className="border p-4 rounded-lg bg-white">
+                  <div className="flex items-start">
+                    <div className="ml-0 flex-grow">
+                      <p className="font-semibold text-gray-800 whitespace-pre-wrap flex items-center">
+                        <span>{idx + 1}. {q.question}</span>
+                        {q.category && (
+                          <span className="ml-2 inline-block text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-200">{q.category}</span>
+                        )}
+                      </p>
+                      {q.imageUrl && (
+                        <div className="my-3 flex justify-center">
+                          <img src={q.imageUrl} alt="Question visual aid" className="w-full max-w-2xl rounded-lg shadow-md border" />
+                        </div>
+                      )}
+                      <div className="space-y-3 mt-3">
+                        {(q.options || []).map((option, index) => {
+                          let buttonClass = 'bg-white hover:bg-indigo-50 border-gray-300';
+                          if (selected) {
+                            if (option === q.answer) {
+                              buttonClass = 'bg-green-100 border-green-500 text-green-800 font-semibold';
+                            } else if (option === selected) {
+                              buttonClass = 'bg-red-100 border-red-500 text-red-800';
+                            }
+                          }
+                          return (
+                            <button
+                              key={index}
+                              onClick={() => handleBrowseSelect(q, option)}
+                              className={`w-full text-left p-4 border rounded-lg transition-colors duration-200 flex items-center ${buttonClass}`}>
+                              <span className="font-semibold mr-4">{index + 1}.</span> {option}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {selected && (
+                        <div className="mt-3">
+                          <p className="text-sm text-gray-700"><span className='font-bold'>내 선택:</span> {selected}</p>
+                          <p className="text-sm text-green-700 mt-1"><span className='font-bold'>정답:</span> {q.answer}</p>
+                        </div>
+                      )}
+                      <div className="mt-3 flex items-center space-x-3">
+                        <button onClick={() => fetchSimilarQuestion(q)} disabled={isSimilarQuestionLoading === q.id}
+                          className="bg-white text-indigo-700 border border-indigo-600 text-sm font-bold py-2 px-4 rounded-lg hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500 disabled:bg-gray-200 disabled:text-gray-500 transition-all flex items-center">
+                          <SparklesIcon className="h-4 w-4 mr-1.5"/>
+                          {isSimilarQuestionLoading === q.id ? '생성 중...' : 'AI 유사 문제 풀어보기'}
+                        </button>
+                        <span className="text-xs text-gray-500">누적 기록: 시도 {stats[getQuestionStatKey(q)]?.attemptsCount ?? 0}회, 정답 {stats[getQuestionStatKey(q)]?.correctCount ?? 0}회</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="text-center mt-8">
+            <button onClick={resetApp} className="bg-gray-700 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-transform transform hover:scale-105">돌아가기</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="bg-slate-100 min-h-screen font-sans p-4">
       <SubjectSwitcher />
@@ -506,9 +765,117 @@ export default function App() {
         {appState === 'input' && renderInputScreen()}
         {appState === 'test' && renderTestScreen()}
         {appState === 'results' && renderResultsScreen()}
+        {appState === 'browse' && renderBrowseScreen()}
       </div>
       <SimilarQuestionModal />
+      <CreateQuestionModal addModalOpen={addModalOpen} setAddModalOpen={setAddModalOpen} />
     </div>
   );
 }
+
+const CreateQuestionModal = ({ addModalOpen, setAddModalOpen }) => {
+  const [subject, setSubject] = useState(loadSelectedSubject());
+  const [questionText, setQuestionText] = useState('');
+  const [options, setOptions] = useState(['', '', '', '', '']);
+  const [correctIndex, setCorrectIndex] = useState(0);
+  const [concept, setConcept] = useState('');
+  const [category, setCategory] = useState('연습');
+  const [imageUrl, setImageUrl] = useState('');
+  const [err, setErr] = useState('');
+
+  if (!addModalOpen) return null;
+
+  const close = () => {
+    setErr('');
+    setQuestionText('');
+    setOptions(['', '', '', '', '']);
+    setCorrectIndex(0);
+    setConcept('');
+    setCategory('연습');
+    setImageUrl('');
+    setAddModalOpen(false);
+  };
+
+  const save = () => {
+    setErr('');
+    const trimmedOptions = options.map(o => (o || '').trim()).filter(Boolean);
+    if (!SUBJECTS.includes(subject)) { setErr('과목을 선택하세요.'); return; }
+    if (!questionText.trim()) { setErr('문제를 입력하세요.'); return; }
+    if (trimmedOptions.length < 2) { setErr('보기는 최소 2개 이상 필요합니다.'); return; }
+    if (correctIndex < 0 || correctIndex >= trimmedOptions.length) { setErr('정답 보기를 선택하세요.'); return; }
+
+    const finalOptions = options.map(o => o.trim()).filter(Boolean);
+    const newQuestion = {
+      subject,
+      id: Date.now(),
+      question: questionText.trim(),
+      options: finalOptions,
+      answer: finalOptions[correctIndex],
+      concept: concept.trim() || '미지정',
+      category: category.trim() || '연습',
+      attemptsCount: 0,
+      correctCount: 0,
+      ...(imageUrl.trim() ? { imageUrl: imageUrl.trim() } : {})
+    };
+
+    const existing = loadCustomQuestions();
+    persistCustomQuestions([...existing, newQuestion]);
+    close();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-3xl">
+        <h3 className="text-xl font-bold text-gray-900 mb-4">문제 등록</h3>
+        {err && <p className="text-red-600 text-sm mb-3">{err}</p>}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-sm text-gray-700">과목</label>
+            <select value={subject} onChange={(e)=>setSubject(e.target.value)} className="w-full border rounded-lg px-3 py-2 mt-1">
+              {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-sm text-gray-700">카테고리</label>
+            <input value={category} onChange={(e)=>setCategory(e.target.value)} className="w-full border rounded-lg px-3 py-2 mt-1" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="text-sm text-gray-700">문제</label>
+            <textarea value={questionText} onChange={(e)=>setQuestionText(e.target.value)} rows={3} className="w-full border rounded-lg px-3 py-2 mt-1" />
+          </div>
+          <div>
+            <label className="text-sm text-gray-700">개념</label>
+            <input value={concept} onChange={(e)=>setConcept(e.target.value)} className="w-full border rounded-lg px-3 py-2 mt-1" />
+          </div>
+          <div>
+            <label className="text-sm text-gray-700">이미지 URL(선택)</label>
+            <input value={imageUrl} onChange={(e)=>setImageUrl(e.target.value)} className="w-full border rounded-lg px-3 py-2 mt-1" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="text-sm text-gray-700">보기</label>
+            <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+              {options.map((opt, idx) => (
+                <div key={idx} className="flex items-center space-x-2">
+                  <input type="radio" name="correct" checked={correctIndex===idx} onChange={()=>setCorrectIndex(idx)} />
+                  <input
+                    value={opt}
+                    onChange={(e)=>{
+                      const next=[...options]; next[idx]=e.target.value; setOptions(next);
+                    }}
+                    placeholder={`보기 ${idx+1}`}
+                    className="flex-1 border rounded-lg px-3 py-2"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end space-x-3 mt-6">
+          <button onClick={close} className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300">취소</button>
+          <button onClick={save} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">저장</button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
