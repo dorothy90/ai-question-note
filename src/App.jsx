@@ -1,9 +1,27 @@
 import React, { useState } from 'react';
-import questions from './data/questions.json';
+import sociocultureQuestions from './data/questions.socioculture.json';
+import worldGeographyQuestions from './data/questions.worldgeography.json';
 
 // --- Helper Functions & Constants ---
 const API_KEY = ""; // Use "" for API key
 const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
+
+// --- Subjects & Local Storage Helpers ---
+const SUBJECTS = ['사회문화', '세계지리'];
+const SELECTED_SUBJECT_KEY = 'selectedSubject';
+
+function loadSelectedSubject() {
+  try {
+    const s = localStorage.getItem(SELECTED_SUBJECT_KEY);
+    return s && SUBJECTS.includes(s) ? s : SUBJECTS[0];
+  } catch (_) {
+    return SUBJECTS[0];
+  }
+}
+
+function persistSelectedSubject(subject) {
+  try { localStorage.setItem(SELECTED_SUBJECT_KEY, subject); } catch (_) {}
+}
 
 // --- Local Storage for Question Stats ---
 const STATS_STORAGE_KEY = 'questionStats';
@@ -25,10 +43,15 @@ function persistQuestionStats(stats) {
   }
 }
 
+function getQuestionStatKey(question) {
+  return `${question.subject}:${question.id}`;
+}
+
 function mergeStatsIntoQuestions(baseQuestions) {
   const stats = loadQuestionStats();
   return baseQuestions.map((q) => {
-    const stat = stats[q.id] || { attemptsCount: q.attemptsCount ?? 0, correctCount: q.correctCount ?? 0 };
+    const statKey = getQuestionStatKey(q);
+    const stat = stats[statKey] || { attemptsCount: q.attemptsCount ?? 0, correctCount: q.correctCount ?? 0 };
     return { ...q, attemptsCount: stat.attemptsCount ?? 0, correctCount: stat.correctCount ?? 0 };
   });
 }
@@ -58,6 +81,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  const [selectedSubject, setSelectedSubject] = useState(loadSelectedSubject());
+
   // New state for Gemini features
   const [isAnalysisLoading, setIsAnalysisLoading] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState("");
@@ -67,7 +92,13 @@ export default function App() {
 
 
   const startTest = () => {
-    const withStats = mergeStatsIntoQuestions(questions);
+    const merged = [...sociocultureQuestions, ...worldGeographyQuestions];
+    const subjectFiltered = merged.filter(q => q.subject === selectedSubject);
+    if (subjectFiltered.length === 0) {
+      setError('선택한 과목의 문항이 없습니다.');
+      return;
+    }
+    const withStats = mergeStatsIntoQuestions(subjectFiltered);
     const shuffled = [...withStats].sort(() => 0.5 - Math.random());
     setTestQuestions(shuffled);
     setUserAnswers(Array(shuffled.length).fill(''));
@@ -101,8 +132,9 @@ export default function App() {
     const currentStats = loadQuestionStats();
     const updatedStats = { ...currentStats };
     calculatedResults.forEach((r) => {
-      const prev = updatedStats[r.id] || { attemptsCount: 0, correctCount: 0 };
-      updatedStats[r.id] = {
+      const key = getQuestionStatKey(r);
+      const prev = updatedStats[key] || { attemptsCount: 0, correctCount: 0 };
+      updatedStats[key] = {
         attemptsCount: prev.attemptsCount + 1,
         correctCount: prev.correctCount + (r.isCorrect ? 1 : 0),
       };
@@ -111,7 +143,7 @@ export default function App() {
 
     // Fire-and-forget remote sync to Vercel serverless API
     try {
-      const updates = calculatedResults.map(r => ({ id: r.id, attemptsDelta: 1, correctDelta: r.isCorrect ? 1 : 0 }));
+      const updates = calculatedResults.map(r => ({ id: getQuestionStatKey(r), attemptsDelta: 1, correctDelta: r.isCorrect ? 1 : 0 }));
       fetch('/api/stats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -136,7 +168,7 @@ export default function App() {
 
     try {
       const promises = uniqueConcepts.map(concept => {
-        const userQuery = `'${concept}' 개념에 대해 수능 사회문화 과목을 공부하는 학생이 쉽게 이해할 수 있도록 자세히 설명해줘. 관련된 심화 내용이나 기출문제 풀이 팁도 포함해줘.`;
+        const userQuery = `'${concept}' 개념에 대해 수능 ${selectedSubject} 과목을 공부하는 학생이 쉽게 이해할 수 있도록 자세히 설명해줘. 관련된 심화 내용이나 기출문제 풀이 팁도 포함해줘.`;
         const payload = {
             contents: [{ parts: [{ text: userQuery }] }],
             tools: [{ "google_search": {} }],
@@ -159,7 +191,7 @@ export default function App() {
       const correctConcepts = results.filter(r => r.isCorrect).map(r => r.concept);
       const incorrectConcepts = results.filter(r => !r.isCorrect).map(r => r.concept);
       
-      const userQuery = `저는 수능 사회문화 과목을 공부하는 학생입니다. 방금 10문제 퀴즈를 풀었고 결과는 다음과 같습니다:\n\n**정답 개념:**\n${[...new Set(correctConcepts)].join(', ') || '없음'}\n\n**오답 개념:**\n${[...new Set(incorrectConcepts)].join(', ')}\n\n이 결과를 바탕으로 제 학습 성과에 대한 종합적인 분석을 해주세요. 강점과 약점을 진단하고, 취약한 부분을 보완하기 위한 구체적이고 실천 가능한 학습 팁 2-3가지를 제안해주세요. 격려하는 말투로 친절하게 작성해주세요.`;
+      const userQuery = `저는 수능 ${selectedSubject} 과목을 공부하는 학생입니다. 방금 ${results.length}문제 퀴즈를 풀었고 결과는 다음과 같습니다:\n\n**정답 개념:**\n${[...new Set(correctConcepts)].join(', ') || '없음'}\n\n**오답 개념:**\n${[...new Set(incorrectConcepts)].join(', ')}\n\n이 결과를 바탕으로 제 학습 성과에 대한 종합적인 분석을 해주세요. 강점과 약점을 진단하고, 취약한 부분을 보완하기 위한 구체적이고 실천 가능한 학습 팁 2-3가지를 제안해주세요. 격려하는 말투로 친절하게 작성해주세요.`;
 
       try {
           const response = await fetch(API_URL, {
@@ -181,7 +213,7 @@ export default function App() {
       setSimilarQuestion(null);
       setError(null);
       
-      const userQuery = `You are a test question creator for South Korean college entrance exams (CSAT). Based on the following social studies concept and example question, create a new, similar multiple-choice question. The new question should test the same core concept but use a different scenario or wording. Provide 5 options, with one correct answer. Ensure the options are plausible distractors for a high school student.\n\n**Core Concept:** ${originalQuestion.concept}\n\n**Original Question:**\n${originalQuestion.question}\n\n**Original Options:**\n${originalQuestion.options.join('\n')}\n\n**Original Answer:** ${originalQuestion.answer}\n\nGenerate the new question in the specified JSON format.`;
+      const userQuery = `You are a test question creator for South Korean college entrance exams (CSAT). Subject: ${selectedSubject}. Based on the following concept and example question, create a new, similar multiple-choice question. The new question should test the same core concept but use a different scenario or wording. Provide 5 options, with one correct answer. Ensure the options are plausible distractors for a high school student.\n\n**Core Concept:** ${originalQuestion.concept}\n\n**Original Question:**\n${originalQuestion.question}\n\n**Original Options:**\n${originalQuestion.options.join('\n')}\n\n**Original Answer:** ${originalQuestion.answer}\n\nGenerate the new question in the specified JSON format.`;
       const schema = {
         type: "OBJECT",
         properties: {
@@ -234,6 +266,35 @@ export default function App() {
     setSimilarQuestionModalOpen(false);
     setIsSimilarQuestionLoading(null);
   };
+
+  const SubjectSwitcher = () => (
+    <div className="w-full max-w-4xl mx-auto mb-4">
+      <div className="bg-white p-4 rounded-xl shadow flex items-center justify-between">
+        <div className="flex items-center space-x-2">
+          <span className="text-sm text-gray-600">과목</span>
+          <select
+            value={selectedSubject}
+            onChange={(e) => {
+              const s = e.target.value;
+              setSelectedSubject(s);
+              persistSelectedSubject(s);
+              if (appState !== 'input') {
+                resetApp();
+              }
+            }}
+            className="text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          >
+            {SUBJECTS.map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <span className="inline-block text-xs font-bold px-2 py-1 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-200">{selectedSubject}</span>
+        </div>
+      </div>
+    </div>
+  );
   
   // --- Render Components ---
   const SimilarQuestionModal = () => {
@@ -296,9 +357,10 @@ export default function App() {
       <div className="bg-white p-8 rounded-xl shadow-lg text-center">
         <div className="flex items-center justify-center text-2xl font-bold text-gray-800 mb-4">
           <BookOpenIcon />
-          <h1 >AI 수능 사회문화 퀴즈</h1>
+          <h1 >AI 수능 {selectedSubject} 퀴즈</h1>
         </div>
-        <p className="text-gray-600 mb-8">엄선된 수능 사회문화 핵심 문제로 실력을 점검하고, AI의 상세한 해설로 약점을 완벽하게 보완해보세요!</p>
+        <p className="text-gray-600 mb-8">엄선된 수능 {selectedSubject} 핵심 문제로 실력을 점검하고, AI의 상세한 해설로 약점을 보완해보세요!</p>
+        {error && <p className="text-red-500 text-center my-4">{error}</p>}
         <button onClick={startTest} className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-transform transform hover:scale-105">퀴즈 시작하기</button>
       </div>
     </div>
@@ -312,9 +374,12 @@ export default function App() {
                 <div className="mb-4">
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-semibold text-indigo-600">문제 {currentQuestionIndex + 1} / {testQuestions.length}</p>
-                      {question.category && (
+                      <div className="flex items-center space-x-2">
+                        <span className="inline-block text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">{selectedSubject}</span>
+                        {question.category && (
                         <span className="ml-2 inline-block text-xs font-bold px-2 py-1 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-200">{question.category}</span>
-                      )}
+                        )}
+                      </div>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-2.5 mt-1"><div className="bg-indigo-600 h-2.5 rounded-full" style={{ width: `${((currentQuestionIndex + 1) / testQuestions.length) * 100}%` }}></div></div>
                 </div>
@@ -350,7 +415,7 @@ export default function App() {
       <div className="w-full max-w-4xl mx-auto">
         <div className="bg-white p-8 rounded-xl shadow-lg">
           <h2 className="text-3xl font-bold text-center text-gray-800 mb-2">테스트 결과</h2>
-          <p className="text-center text-xl text-gray-600 mb-6">총 {results.length}문제 중 <span className="font-bold text-indigo-600">{correctCount}</span>개를 맞혔습니다!</p>
+          <p className="text-center text-xl text-gray-600 mb-6">[{selectedSubject}] 총 {results.length}문제 중 <span className="font-bold text-indigo-600">{correctCount}</span>개를 맞혔습니다!</p>
           
           {!aiAnalysis && (
             <div className="text-center mb-8">
@@ -396,7 +461,7 @@ export default function App() {
                            </button>
                         </div>
                     )}
-                    <p className="text-xs text-gray-500 mt-2">누적 기록: 시도 {stats[result.id]?.attemptsCount ?? 0}회, 정답 {stats[result.id]?.correctCount ?? 0}회</p>
+                    <p className="text-xs text-gray-500 mt-2">누적 기록: 시도 {stats[getQuestionStatKey(result)]?.attemptsCount ?? 0}회, 정답 {stats[getQuestionStatKey(result)]?.correctCount ?? 0}회</p>
                   </div>
                 </div>
               </div>
@@ -435,10 +500,13 @@ export default function App() {
   };
 
   return (
-    <div className="bg-slate-100 min-h-screen font-sans flex items-center justify-center p-4">
-      {appState === 'input' && renderInputScreen()}
-      {appState === 'test' && renderTestScreen()}
-      {appState === 'results' && renderResultsScreen()}
+    <div className="bg-slate-100 min-h-screen font-sans p-4">
+      <SubjectSwitcher />
+      <div className="flex items-center justify-center">
+        {appState === 'input' && renderInputScreen()}
+        {appState === 'test' && renderTestScreen()}
+        {appState === 'results' && renderResultsScreen()}
+      </div>
       <SimilarQuestionModal />
     </div>
   );
