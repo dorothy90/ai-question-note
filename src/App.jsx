@@ -7,7 +7,7 @@ const API_KEY = ""; // Use "" for API key
 const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
 
 // --- Subjects & Local Storage Helpers ---
-const SUBJECTS = ['사회문화', '세계지리'];
+const SUBJECTS = ['사회문화', '세계지리','test'];
 const SELECTED_SUBJECT_KEY = 'selectedSubject';
 const TEST_COUNT_KEY = 'testQuestionCount';
 const MASTERED_THRESHOLD_KEY = 'masteredCorrectThreshold';
