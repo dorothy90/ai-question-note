@@ -11,6 +11,7 @@ const SUBJECTS = ['사회문화', '세계지리','test'];
 const SELECTED_SUBJECT_KEY = 'selectedSubject';
 const TEST_COUNT_KEY = 'testQuestionCount';
 const MASTERED_THRESHOLD_KEY = 'masteredCorrectThreshold';
+const ATTEMPTS_THRESHOLD_KEY = 'attemptsRemoveThreshold';
 const CUSTOM_QUESTIONS_KEY = 'customQuestions';
 
 function loadSelectedSubject() {
@@ -48,6 +49,18 @@ function loadMasteredThreshold() {
 
 function persistMasteredThreshold(n) {
   try { localStorage.setItem(MASTERED_THRESHOLD_KEY, String(n)); } catch (_) {}
+}
+
+function loadAttemptsThreshold() {
+  try {
+    const raw = localStorage.getItem(ATTEMPTS_THRESHOLD_KEY);
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= 0 ? n : 0; // 0이면 제외 안 함
+  } catch (_) { return 0; }
+}
+
+function persistAttemptsThreshold(n) {
+  try { localStorage.setItem(ATTEMPTS_THRESHOLD_KEY, String(n)); } catch (_) {}
 }
 
 function loadCustomQuestions() {
@@ -123,6 +136,7 @@ export default function App() {
   const [selectedSubject, setSelectedSubject] = useState(loadSelectedSubject());
   const [testCount, setTestCount] = useState(loadTestCount());
   const [masteredThreshold, setMasteredThreshold] = useState(loadMasteredThreshold());
+  const [attemptsThreshold, setAttemptsThreshold] = useState(loadAttemptsThreshold());
   const [addModalOpen, setAddModalOpen] = useState(false);
 
   // New state for Gemini features
@@ -146,8 +160,11 @@ export default function App() {
     const filteredByMastery = masteredThreshold > 0
       ? withStats.filter(q => (q.correctCount ?? 0) < masteredThreshold)
       : withStats;
-    setBrowseQuestions(filteredByMastery);
-  }, [appState, selectedSubject, masteredThreshold]);
+    const filteredByAttempts = attemptsThreshold > 0
+      ? filteredByMastery.filter(q => (q.attemptsCount ?? 0) < attemptsThreshold)
+      : filteredByMastery;
+    setBrowseQuestions(filteredByAttempts);
+  }, [appState, selectedSubject, masteredThreshold, attemptsThreshold]);
 
 
   const startTest = () => {
@@ -162,12 +179,15 @@ export default function App() {
     const filteredByMastery = masteredThreshold > 0
       ? withStats.filter(q => (q.correctCount ?? 0) < masteredThreshold)
       : withStats;
-    if (filteredByMastery.length === 0) {
-      setError(`정답 ${masteredThreshold}회 이상 제외 설정으로 남은 문항이 없습니다. 기준을 낮추세요.`);
+    const filteredByAttempts = attemptsThreshold > 0
+      ? filteredByMastery.filter(q => (q.attemptsCount ?? 0) < attemptsThreshold)
+      : filteredByMastery;
+    if (filteredByAttempts.length === 0) {
+      setError('설정한 제외 기준(정답/시도 횟수)으로 남은 문항이 없습니다. 기준을 낮추세요.');
       return;
     }
     // Shuffle options per question so choices appear in random order each run
-    const withShuffledOptions = filteredByMastery.map(q => ({
+    const withShuffledOptions = filteredByAttempts.map(q => ({
       ...q,
       options: Array.isArray(q.options) ? [...q.options].sort(() => 0.5 - Math.random()) : q.options
     }));
@@ -192,7 +212,10 @@ export default function App() {
     const filteredByMastery = masteredThreshold > 0
       ? withStats.filter(q => (q.correctCount ?? 0) < masteredThreshold)
       : withStats;
-    setBrowseQuestions(filteredByMastery);
+    const filteredByAttempts = attemptsThreshold > 0
+      ? filteredByMastery.filter(q => (q.attemptsCount ?? 0) < attemptsThreshold)
+      : filteredByMastery;
+    setBrowseQuestions(filteredByAttempts);
     setBrowseAnswers({});
     setAppState('browse');
     setError(null);
@@ -396,7 +419,7 @@ export default function App() {
   };
 
   const SubjectSwitcher = () => (
-    <div className="w-full max-w-4xl mx-auto mb-4">
+    <div className="w-full mb-4">
       <div className="bg-white p-4 rounded-xl shadow flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <a
@@ -405,7 +428,7 @@ export default function App() {
             className="px-3 py-1.5 text-sm bg-white text-indigo-700 rounded-lg border border-indigo-600 hover:bg-indigo-50"
           >홈</a>
           <div className="flex items-center space-x-2">
-            <span className="text-sm text-gray-600">과목</span>
+            {/* <span className="text-sm text-gray-600">과목</span> */}
             <select
               value={selectedSubject}
               onChange={(e) => {
@@ -456,6 +479,24 @@ export default function App() {
                   const clamped = Math.max(0, Math.min(50, Math.floor(v)));
                   setMasteredThreshold(clamped);
                   persistMasteredThreshold(clamped);
+                }
+              }}
+              className="w-24 text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 text-right"
+            />
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="text-sm text-gray-600">시도 n회 이상 제외</span>
+            <input
+              type="number"
+              min={0}
+              max={50}
+              value={attemptsThreshold}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (!Number.isNaN(v)) {
+                  const clamped = Math.max(0, Math.min(50, Math.floor(v)));
+                  setAttemptsThreshold(clamped);
+                  persistAttemptsThreshold(clamped);
                 }
               }}
               className="w-24 text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400 text-right"
